@@ -1,0 +1,1058 @@
+;;;;;;; Program Hierarchy ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Mainline
+;   Initial
+;   HiPriISR Interrupt
+;   LoopTime
+;     InitLCD.
+;      T40
+;        DisplayV
+;         DisplayC    
+;Introduction
+; BattleGrounds
+;   Instructions
+;    Push Button
+;     Interrupt_Handeler 1
+;      Interrupt_Handeler 2
+;       Interrupt_Handeler 3
+;         Missed
+;          Target
+;            MISSED
+;             TARGET_HIT
+;              Flashing Lights
+;               Loser
+;                Winner
+;                 Game Over
+;                  ByteDisplay subroutine
+;                   Bit Location
+;                    Constant strings
+;;;;;;; Assembler directives ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; 
+        list  P=PIC18F452, F=INHX32, C=160, N=0, ST=OFF, MM=OFF, R=DEC, X=ON
+        #include P18F452.inc
+        __CONFIG  _CONFIG1H, _HS_OSC_1H  ;HS oscillator
+        __CONFIG  _CONFIG2L, _PWRT_ON_2L & _BOR_ON_2L & _BORV_42_2L  ;Reset
+        __CONFIG  _CONFIG2H, _WDT_OFF_2H  ;Watchdog timer disabled
+        __CONFIG  _CONFIG3H, _CCP2MX_ON_3H  ;CCP2 to RC1 (rather than to RB3)
+        __CONFIG  _CONFIG4L, _LVP_OFF_4L  ;RB5 enabled for I/O
+ 
+;;;;;;; Variables ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Variables are 8-bit long each
+cblock  0x000                   ;Beginning of Access RAM
+TMR0LCOPY                      ;Copy of sixteen-bit Timer0 used by LoopTime
+TMR0HCOPY
+INTCONCOPY
+row
+column
+COUNT
+COUNTER
+BYTESTR:10
+BYTE
+number
+compare
+PTR_BUP
+number_BUP
+counter
+counter_BUP
+test_BUP
+missed
+target
+random_number1
+random_number2
+random_number3 
+endc
+;;;;;;; Macro definitions ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+MOVLF   macro  literal,dest
+        movlw  literal
+        movwf  dest
+        endm
+POINT   macro  stringname
+        MOVLF  high stringname, TBLPTRH
+        MOVLF  low stringname, TBLPTRL
+        endm 
+DISPLAY macro  register
+        movff  register,BYTE
+        call  ByteDisplay
+        endm
+;;;;;;; Vectors ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        org  0x0000             	;Reset vector
+        nop
+        goto Mainline
+        org  0x0008                    	;High priority interrupt vector
+        goto HiPriISR    
+        org  0x0018             	;Low priority interrupt vector
+        goto $  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Mainline
+    rcall Initial                            	;Initializes everything
+    MOVLF 50,number             	;psuedo-number
+    MOVLF 0,missed              	;this is used in missed subroutine
+    MOVLF 0,target             	 ;this is used in target subroutine
+Loop
+    bcf PORTB,RB0               	;clear the flag for the interrupt on Cadet Push-Button
+    rcall Introduction          	;intro to game
+    rcall Instructions          	;instruct user to pick number 0-15
+K1
+    rcall BattleGrounds         	;shows the battle field
+    bra K1            		;this loop K1 is to make it 
+                			;goes back to the battlefield after each guess 
+    bra Loop
+;;;;;;; Initial subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; This subroutine performs all initializations of variables and registers.
+;;;;;;;;Initial;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;  
+Initial
+    MOVLF  B'11110001',TRISA       	;Set I/O for PORTA
+    MOVLF  B'00001111',TRISB       	;Set I/O for PORTB
+    MOVLF  B'00000000',TRISC  	;Set I/0 for PORTC
+    MOVLF  B'00001111',TRISD  	;Set I/O for PORTD
+    MOVLF  B'00000000',TRISE  	;Set I/O for PORTE
+    MOVLF  B'10001000',T0CON  	;Set up Timer0 for a looptime of 10 ms
+    MOVLF  B'00010000',PORTA  	;Turn off all four LEDs driven from PORTA
+    MOVLF  B'10001110',ADCON1     	;Enable PORTA & PORTE digital I/O pins
+    MOVLF  B'00000001',ADCON0  	;GO_DONE =0 /RE2 SELECTED
+    rcall InitLCD                  		;Initializes the LCD Display
+    bsf RCON,IPEN                  		;enables high/low interrupt priority levels
+    bsf INTCON,RBIF                		;clears bit for intcon register
+    bsf INTCON,INT0IE              		;Interrupt1 Local Engable Bit - High
+    bcf INTCON,INT0IF              		;Interrupt1 Local Flag Bit - High
+    bcf INTCON,GIEL                		;Low Priority
+    bsf INTCON,GIEH               		 ;High Priority
+    bsf INTCON2,INTEDG0            	;set rising-edge sensiitivity
+    return
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;High-Priority Interrupt Subroutine    
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+HiPriISR
+    movff FSR0L,PTR_BUP        		;move RAM 0 to backup
+    movff number,number_BUP     	;number was saved to backup
+    movff INTCON,CCP2IP == 1        	;reference page 392 in textbook
+    bcf INTCON,INT0IF            		;Frm page 123 for Priority High interrupt
+    movff PORTC,BYTE        		;this puts PORTC's contents into BYTE
+    rcall Interrupt_Handler1    		;to compare guess, & randomize 'number'
+    bcf INTCON,RBIF            		 ;restores flag
+    movff PTR_BUP,FSR0L        		;move back to RAM
+    movff number_BUP,number    	;move number backup back to number
+    retfie FAST                     		;returns and restores registers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;; LoopTime subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Bignum  equ     65536-25000+12+2
+LoopTime
+        ;REPEAT_
+Loop1
+       ;UNTIL_ INTCON,TMR0IF == 1        
+       btfss INTCON,TMR0IF
+       bra Loop1
+RL1
+        movff  INTCON,INTCONCOPY  	;Disable all interrupts to CPU
+        bcf  INTCON,GIEL			;disables interrupts*
+        movff  TMR0L,TMR0LCOPY  	;Read 16-bit counter at this moment
+        movff  TMR0H,TMR0HCOPY
+        movlw  low  Bignum
+        addwf  TMR0LCOPY,F
+        movlw  high  Bignum
+        addwfc  TMR0HCOPY,F
+        movff  TMR0HCOPY,TMR0H
+        movff  TMR0LCOPY,TMR0L  	;Write 16-bit counter at this moment
+        movf  INTCONCOPY,W      	;Restore GIEH interrupt enable bit
+        ;bsf  INTCON,GIEL		;re-enables interrupts to CPU*
+        andlw  B'10000000'
+        iorwf  INTCON,F
+        bcf  INTCON,TMR0IF      		;Clear Timer0 flag
+        return
+;;;;;;; InitLCD subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Initialize the Optrex 8x2 character LCD.
+; First wait for 0.1 second, to get past display's power-on reset time.
+InitLCD
+MOVLF  10,COUNT              	 ;Wait 0.1 second
+             ;REPEAT_
+Loop2
+rcall  LoopTime               	;Call LoopTime 10 times
+decf  COUNT,F
+              ;UNTIL_  .Z.
+bnz Loop2
+RLoop2
+bcf  PORTE,0                 	 ;RS=0 for command
+POINT  LCDstr                 	;Set up table pointer to initialization string
+tblrd*                        		;Get first byte from string into TABLAT
+             ;REPEAT_
+Loop3
+bsf  PORTE,1                  ;Drive E high
+movff  TABLAT,PORTD           ;Send upper nibble
+bcf  PORTE,1                  ;Drive E low so LCD will process input
+rcall  LoopTime               ;Wait ten milliseconds
+bsf  PORTE,1                  ;Drive E high
+swapf  TABLAT,W               ;Swap nibbles
+movwf  PORTD                  ;Send lower nibble
+bcf  PORTE,1                  ;Drive E low so LCD will process input
+rcall  LoopTime               ;Wait ten milliseconds
+tblrd+*                       ;Increment pointer and get next byte
+movf  TABLAT,F                ;Is it zero?
+              ;UNTIL_  .Z.
+bnz Loop3
+RL3
+             return
+;;;;;;; T40 subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Pause for 40 microseconds  or 40/0.4 = 100 clock cycles.
+; Assumes 10/4 = 2.5 MHz internal clock rate.
+T40
+        movlw  100/3            ;Each REPEAT loop takes 3 cycles
+        movwf  COUNT
+        ;REPEAT_
+L4.4
+        decf  COUNT,F
+        ;UNTIL_  .Z.
+        bnz L4.4
+RLoop4
+        return
+;;;;;;; DisplayV subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; This subroutine is called with FSR0 containing the address of a variable
+; display string.  It sends the bytes of the string to the LCD.  The first
+; byte sets the cursor position.  The remaining bytes are displayed, beginning
+; at that position.
+DisplayV
+bcf  PORTE,0                 ;Drive RS pin low for cursor positioning code
+             ;REPEAT_
+L5.5
+          	bsf  PORTE,1         	 ;Drive E pin high
+          	movff INDF0,PORTD     ;Send upper nibble
+          	bcf  PORTE,1         	 ;Drive E pin low so LCD will accept nibble
+          	bsf  PORTE,1         	 ;Drive E pin high again
+          	swapf  INDF0,W       	 ;Swap nibbles
+         	 movwf  PORTD          	;Write lower nibble
+          	bcf  PORTE,1         	 ;Drive E pin low so LCD will process byte
+          	rcall  T40            		;Wait 40 usec
+          	bsf  PORTE,0          	;Drive RS pin high for displayable characters
+          	movf  PREINC0,W      	 ;Increment pointer, then get next byte
+         	 ;UNTIL_ .Z.            	 ;Is it zero?
+          	bnz L5.5
+RL5
+         	return
+;;;;;;;;DisplayC subroutine;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; This subroutine is called with TBLPTR containing the address of a constant
+; display string.  It sends the bytes of the string to the LCD.  The first
+; byte sets the cursor position.  The remaining bytes are displayed, beginning
+; at that position.
+; This subroutine expects a normal one-byte cursor-positioning code, 0xhh, or
+; an occasionally used two-byte cursor-positioning code of the form 0x00hh.
+DisplayC
+        bcf  PORTE,0            	;Drive RS pin low for cursor-positioning code
+        tblrd*                  		;Get byte from string into TABLAT
+        movf  TABLAT,F          	;Check for leading zero byte
+        ;IF_ .Z.
+        bnz L6.6
+        tblrd+*               		;If zero, get next byte
+         ENDIF_
+L6.6
+          ;REPEAT_
+L7.7
+          bsf  PORTE,1         	;Drive E pin high
+          movff  TABLAT,PORTD   ;Send upper nibble
+          bcf  PORTE,1          	;Drive E pin low so LCD will accept nibble
+          bsf  PORTE,1          	;Drive E pin high again
+          swapf  TABLAT,W      	 ;Swap nibbles
+          movwf  PORTD          	;Write lower nibble
+          bcf  PORTE,1         	 ;Drive E pin low so LCD will process byte
+          rcall  T40            		;Wait 40 usec
+          bsf  PORTE,0          	;Drive RS pin high for displayable characters
+          tblrd+*              		;Increment pointer, then get next byte
+          movf  TABLAT,F        	;Is it zero?
+          ;UNTIL_ .Z.
+        bnz L7.7
+RL7
+       Return
+
+
+;;;;;;Delay for LEDs on Cadet Board;;;;makes 0.25 Sec delay;;;;;;;;;;;;;;;;;;;;;;
+Delay
+    MOVLF 25,COUNTER            ;repeats loop for 250 times for 1 sec delay
+loop2
+    rcall LoopTime              	;inside loop of 10ms
+    decf COUNTER,F        	;dec value of counter until Z flag is raised
+    bnz loop2          
+    return   
+;;;;;;Delay1 for LEDs on Cadet Board;;;;makes 0.50 Sec delay;;;;;;;;;;;;;;;;;;;;
+Delay1
+    MOVLF 50,COUNTER            ;repeats loop for 500 times fora 1 sec delay
+loop2.2
+    rcall LoopTime              	;inside loop of 10ms
+    decf COUNTER,F        	;dec value of counter until Z flag is raised
+    bnz loop2.2          
+    return
+;;;;;;Delay2 for LEDs on Cadet Board;;;;makes 2.00 Sec delay;;;;;;;;;;;;;;;;;;;;
+Delay2
+    MOVLF 200,COUNTER           ;repeats loop for 2000 times fora 1 sec delay
+loop3
+    rcall LoopTime              	;inside loop of 10ms
+    decf COUNTER,F        	;dec value of counter until Z flag is raised
+    bnz loop3          
+    return
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;Introduction;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Introduction                    	;welcome/intro to game
+    POINT INTRO_0       		 ;points to intro LCDstr
+    rcall DisplayC        		;calls DisplayC subroutine to display on LCD
+    rcall Delay            		;gives time inbetween each LCDstr
+    POINT INTRO_1
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_2
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_3
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_4
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_5
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_6
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_7
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_8
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_9
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_10
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_11
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_12
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_13
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_14
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_15
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_16
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_17
+    rcall DisplayC
+    rcall Delay
+    POINT INTRO_18
+    rcall DisplayC
+    rcall Delay2
+    return
+;;;;;;;;;;;;;;BattleGrounds;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;shows battle field "*" (Make Field Better)
+BattleGrounds
+    POINT BattleGrounds_1    		;points to BattleGround LCDstr
+    rcall DisplayC
+    POINT BattleGrounds_2
+    rcall DisplayC
+    rcall Delay
+    return
+;;;;;;;;;Instructions;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;instruct user to pic number
+Instructions
+    POINT PICK_NUMBER_1            	;points to instruction LCDstr
+    rcall DisplayC
+    POINT PICK_NUMBER_2
+    rcall DisplayC
+    rcall Delay2
+    POINT PICK_NUMBER_3
+    rcall DisplayC
+    POINT PICK_NUMBER_4  
+    rcall DisplayC
+    rcall Delay2
+    POINT PUSH_BUTTON_20        	;Press when advised
+    rcall DisplayC
+    POINT PUSH_BUTTON_21
+    rcall DisplayC
+    rcall Delay2  
+    POINT PUSH_BUTTON_22       	 ;instructions to logic switches
+    rcall DisplayC
+    POINT PUSH_BUTTON_23
+    rcall DisplayC
+    rcall Delay2
+    POINT PUSH_BUTTON_24
+    rcall DisplayC
+    POINT PUSH_BUTTON_25
+    rcall DisplayC
+    rcall Delay2
+    POINT PUSH_BUTTON_26
+    rcall DisplayC
+    POINT PUSH_BUTTON_27
+    rcall DisplayC
+    rcall Delay2
+    return
+;;;;;;;;;;;;;Interrupt_Handler1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Interrupt_Handler1    		;this checks the guess for the first random spot
+    movlw B'11110000'        	;move value:11110000 into WREG
+    subwf number,F     	;subtract WREG from 'number' to have value between 0-15, writes on itself
+    movff number,random_number1    ;save number to call on at the end of the game
+    movf number,W        		;move the contents of number to WREG
+    subwf BYTE,W        			;subtract WREG from BYTE, the result is in WREG
+    movwf compare        		;move the contents of WREG to compare
+  IF_            				;make sure WREG-BYTE= 0
+    AND_        				;checks each bit to ensure its 0 or 1 as indicated for bit 0-3
+     compare,0==0    			;bit 0 of 'compare'    
+     compare,1==0   			 ;bit 1 of 'compare'
+     compare,2==0    			;bit 2 of 'compare'
+     compare,3==0    			;bit 3 of 'compare'
+     ENDAND_
+    rcall Target    		;if WREG-BYTE=0, they are equal to each other->call target
+ELSE_
+    rcall Interrupt_Handler2   	 ;if not 0 check the next psuedo-random spot
+ENDIF_
+    return
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;Interrupt_Handler2;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;this checks the geuss for the second random number        
+Interrupt_Handler2    		; random number generating simultaneously ;;;;;;;;;
+    rlncf number,F        		;randomize 'number' rotate left w/ no carry, write on itself
+    decf number,F        		;randomize 'number' decrement number, write on itself
+    movlw B'11110000'        	;move value:11110000 into WREG
+    subwf number,F   	;subtract WREG from 'number' to have value between 0-15, writes on itself
+    movff number,random_number2   ;save number to call on at the end of the game
+    movf number,W       		 ;move the contents of number to WREG
+    subwf BYTE,W        			;subtract WREG from BYTE, the result is in WREG
+    movwf compare        		;move the contents of WREG to compare  
+ IF_            				;make sure WREG-BYTE= 0
+    AND_        				;checks each bit to ensure its 0 or 1 as indicated for bit 0-3
+     compare,0==0
+     compare,1==0
+     compare,2==0
+     compare,3==0
+     ENDAND_
+    rcall Target        ;target hit
+ELSE_
+    rcall Interrupt_Handler3
+ENDIF_
+    return
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;Interrupt_Handler3;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+;this checks the geuss for the third random spot
+Interrupt_Handler3        
+    swapf number,F        ;randomize 'number' by swapping the nibbles
+    movlw B'11110000'       	 ;move value:11110000 into WREG
+    subwf number,F    		;subtract WREG from 'number' to have value between 0-15, writes on itself
+    movff number,random_number3    ;save number to call on at the end of the game
+    movf number,W        		 ;move the contents of number to WREG
+    subwf BYTE,W       			 ;subtract WREG from BYTE, the result is in WREG
+    movwf compare        		;move the contents of WREG to compare             
+IF_            ;make sure WREG-BYTE= 0
+    AND_        ;checks each bit to ensure its 0 or 1 as indicated for bit 0-3
+     compare,0==0
+     compare,1==0
+     compare,2==0
+     compare,3==0
+     ENDAND_
+    rcall Target    ;target hit
+ELSE_
+    rcall Missed    ;display missed target after it checks all the numbers
+ENDIF_
+    return  
+;;;;;;;;;;;;;;;;;;;;;;;;;Missed;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Missed            ; this subroutine checks to see if they missed three.  
+    incf missed,F
+    IF_            	;missed 1/3->point to Missed LCDstr
+    AND_
+     missed,0==1
+     missed,1==0
+     missed,2==0
+     missed,3==0
+     ENDAND_
+    rcall MISSED
+    ENDIF_    
+    IF_            	;missed 2/3->point to Missed LCDstr
+    AND_
+     missed,0==0
+     missed,1==1
+     missed,2==0
+     missed,3==0
+     ENDAND_
+    rcall MISSED
+    ENDIF_
+    IF_            	;missed 3/3-> point to game over LCDstr & lose LCDstr
+    AND_
+     missed,0==1
+     missed,1==1
+     missed,2==0
+     missed,3==0
+     ENDAND_
+    rcall Loser
+    rcall GameOver
+    MOVLF 0,missed
+    ENDIF_
+    return    
+;;;;;;;;;;;;;;;;;;;;;;;;;Target Hit;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;this subroutine checks to see if they hit three.    
+Target
+    incf target,F
+    IF_        		;target 1/3->point to Target LCDstr & LED lights
+    AND_
+     target,0==1
+     target,1==0
+     target,2==0
+     target,3==0
+     ENDAND_
+    rcall HIT_Lights
+    rcall TARGET_HIT
+    rcall DisplayC
+    rcall Delay
+    ENDIF_
+ 
+    IF_        		;target 2/3->point to Target LCDstr & LED lights
+    AND_
+     target,0==0
+     target,1==1
+     target,2==0
+     target,3==0
+     ENDAND_
+    rcall HIT_Lights
+    rcall TARGET_HIT
+    rcall DisplayC
+    rcall Delay
+    ENDIF_
+ 
+    IF_       	;target 3/3-> point to game over, win, and LED lights on pic and Cadet Board
+    AND_
+     target,0==1
+     target,1==1
+     target,2==0
+     target,3==0
+     ENDAND_
+    rcall TARGET_HIT
+    rcall DisplayC
+    rcall Delay
+    rcall HIT_Lights
+    bsf PORTB,5
+    rcall Winner
+    rcall GameOver
+    bcf PORTB,5
+    MOVLF 0,target
+    ENDIF_
+    return
+     
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;MISSED;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+MISSED        		;this subroutine points to the lcd string when you missed
+    POINT MISSED_1      
+    rcall DisplayC
+    POINT MISSED_2
+    rcall DisplayC
+    rcall Delay1
+    POINT MISSED_3
+    rcall DisplayC
+    rcall Delay1
+    POINT MISSED_4
+    rcall DisplayC
+    rcall Delay1
+    POINT MISSED_5
+    rcall DisplayC
+    POINT MISSED_6
+    rcall DisplayC
+    rcall Delay1
+    POINT MISSED_7
+    rcall DisplayC
+    rcall Delay1
+    POINT MISSED_8
+    rcall DisplayC
+    rcall Delay1
+    return
+;;;;;;;Winner/Target_Hit;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+TARGET_HIT  		;this subroutine points to the lcd string when you hit the target
+    POINT TARGET_1  
+    rcall DisplayC
+    POINT TARGET_2
+    rcall DisplayC
+    rcall Delay2
+    POINT TARGET_3
+    rcall DisplayC
+    POINT TARGET_4
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_5
+    rcall DisplayC
+    POINT TARGET_10
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_6
+    rcall DisplayC
+    POINT TARGET_11
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_7
+    rcall DisplayC
+    POINT TARGET_12
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_8
+    rcall DisplayC
+    POINT TARGET_13
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_9
+    rcall DisplayC
+    POINT TARGET_14
+    rcall DisplayC
+    rcall Delay1
+    POINT TARGET_15
+    rcall DisplayC
+    POINT TARGET_16
+    rcall DisplayC
+    rcall Delay1
+    return                      
+;;;;;;;;;GAME OVER subroutine;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+GameOver           	;this subroutine points to the lcd string when game is over
+    POINT BATTLE_BIT_1      
+    rcall DisplayC
+    rcall Delay1
+    POINT BATTLE_BIT_2
+    rcall DisplayC
+    rcall Delay1
+    POINT BATTLE_BIT_3
+    rcall DisplayC
+    rcall Delay1
+    POINT BATTLE_BIT_4
+    rcall DisplayC
+    rcall Delay1
+    POINT BATTLE_BIT_5
+    rcall DisplayC
+    rcall Delay1
+    movff random_number1,number    ;this calls on the saved number1 to display at the end of the game
+    rcall Bit_Location
+    movff random_number2,number    ;this calls on the saved number2 to display at the end of the game
+    rcall Bit_Location
+    movff random_number3,number    ;this calls on the saved number3 to display at the end of the game
+    rcall Bit_Location
+    POINT GAME_OVER_1             
+    rcall DisplayC
+    POINT GAME_OVER_2
+    rcall DisplayC
+    rcall Delay1
+    POINT GAME_OVER_3
+    rcall DisplayC
+    rcall Delay1
+    POINT GAME_OVER_4
+    rcall DisplayC
+    rcall Delay1
+    POINT GAME_OVER_5
+    rcall DisplayC
+    POINT GAME_OVER_6
+    rcall DisplayC
+    rcall Delay1
+    POINT GAME_OVER_7
+    rcall DisplayC
+    rcall Delay1
+    POINT GAME_OVER_8
+    rcall DisplayC
+    rcall Delay1
+    return
+;;;;;;;;;;;Flashing lights;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+HIT_Lights
+    MOVLF B'00011010', PORTA       ;Turns Left and Right LEDs on
+    rcall Delay1
+    MOVLF B'00010100', PORTA       ;Turns Center LED on
+    rcall Delay1
+    MOVLF B'00011010', PORTA       ;Turns Left and Right LEDs on
+    rcall Delay1
+    MOVLF B'00010100', PORTA       ;Turns Center LED on
+    rcall Delay1
+    return
+;;;;;;;;;;;;;;;;;;;;;;;;;Loser;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Loser           		 ;the bits won the war LCDstr :(
+    POINT LOSER_1
+    rcall DisplayC
+    rcall Delay1
+    POINT LOSER_2
+    rcall DisplayC
+    rcall Delay1
+    return
+;;;;;;;;Winner -all 3 Battleships sunk;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Winner                          	;You Win the War LCDstr
+    POINT WINNER_1
+    rcall DisplayC
+    POINT WINNER_2
+    rcall DisplayC
+    rcall Delay2
+    POINT WINNER_3
+    rcall DisplayC
+    POINT WINNER_4
+    rcall DisplayC
+    rcall Delay2
+    POINT WINNER_5
+    rcall DisplayC
+    POINT WINNER_6
+    rcall DisplayC
+    rcall Delay2
+    POINT WINNER_7
+    rcall DisplayC
+    POINT WINNER_8
+    rcall DisplayC
+    return
+;;;;;;;;;; ByteDisplay subroutine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Display whatever is in the BYTE as a binary number
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;  
+ByteDisplay
+    lfsr 0,BYTESTR+8
+N8
+    clrf WREG
+    rrcf BYTE,F                 	;move bit into carry
+    rlcf WREG,F                	 ;and from there into WREG
+    iorlw 0x30                  	;convery to ASCII
+    movwf POSTDEC0             	 ;and more to string (*)
+    movf FSR0L,W               	 ;check if done?
+    sublw low BYTESTR
+    bnz N8
+    lfsr 0,BYTESTR              	;set pointer to display string
+    MOVLF 0xc0, BYTESTR         ;add cursor-positioning code (*)
+    clrf BYTESTR+9              	;and end-of-string terminator
+    rcall DisplayV  
+    return
+;;;;;;;;;;;;;;;;;;;;;Bit Displayer ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;this subroutine shows where the bits were hidden and displays LCDstr
+Bit_Location
+IF_            ;0
+    AND_
+     number,0==0
+     number,1==0
+     number,2==0
+     number,3==0
+     ENDAND_
+    POINT NUM_0
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_A
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_            ;1
+    AND_
+     number,0==1
+     number,1==0
+     number,2==0
+     number,3==0
+     ENDAND_
+    POINT NUM_1
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_B
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_            ;2
+    AND_
+     number,0==0
+     number,1==1
+     number,2==0
+     number,3==0
+     ENDAND_
+    POINT NUM_2
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_C
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_            ;3
+    AND_
+     number,0==1
+     number,1==1
+     number,2==0
+     number,3==0
+     ENDAND_
+    POINT NUM_3
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_D
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_            ;4
+    AND_
+     number,0==0
+     number,1==0
+     number,2==1
+     number,3==0
+     ENDAND_
+    POINT NUM_4
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_E
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_            ;5
+    AND_
+     number,0==1
+     number,1==0
+     number,2==1
+     number,3==0
+     ENDAND_
+    POINT NUM_5
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_F
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;6
+    AND_
+     number,0==0
+     number,1==1
+     number,2==1
+     number,3==0
+     ENDAND_
+    POINT NUM_6
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_G
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;7
+    AND_
+     number,0==1
+     number,1==1
+     number,2==1
+     number,3==0
+     ENDAND_
+    POINT NUM_7
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_H
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;8
+    AND_
+     number,0==0
+     number,1==0
+     number,2==0
+     number,3==1
+     ENDAND_
+    POINT NUM_8
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_I
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;9
+    AND_
+     number,0==1
+     number,1==0
+     number,2==0
+     number,3==1
+     ENDAND_
+    POINT NUM_9
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_J
+    rcall DisplayC
+    rcall Delay1
+ENDIF_    
+IF_                ;A   10
+    AND_
+     number,0==0
+     number,1==1
+     number,2==0
+     number,3==1
+     ENDAND_
+    POINT NUM_10
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_K
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;B   11
+    AND_
+     number,0==1
+     number,1==1
+     number,2==0
+     number,3==1
+     ENDAND_
+    POINT NUM_11
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_L
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;C    12
+    AND_
+     number,0==0
+     number,1==0
+     number,2==1
+     number,3==1
+     ENDAND_
+    POINT NUM_12
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_M
+    rcall DisplayC
+    rcall Delay1
+ENDIF_
+IF_                ;D     13
+    AND_
+     number,0==1
+     number,1==0
+     number,2==1
+     number,3==1
+     ENDAND_
+    POINT NUM_13
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_N
+    rcall DisplayC
+    rcall Delay1
+ENDIF_    
+IF_                ;*     14
+    AND_
+     number,0==0
+     number,1==1
+     number,2==1
+     number,3==1
+     ENDAND_
+    POINT NUM_14
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_O
+    rcall DisplayC
+    rcall Delay1
+ENDIF_    
+IF_                ;     15
+    AND_
+     number,0==1
+     number,1==1
+     number,2==1
+     number,3==1
+     ENDAND_
+    POINT NUM_15
+    rcall DisplayC
+    rcall Delay1
+    POINT NUM_P
+    rcall DisplayC
+    rcall Delay1
+ENDIF_    
+    return     
+;;;;;;;;;constant strings;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;      
+LCDstr db 0x33,0x32,0x28,0x01,0x0c,0x06,0x00  ;Initialization string for LCD
+BattleGrounds_1 db 0x2f,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x00  ;layout of the field
+BattleGrounds_2 db 0x2f,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x5c,0x00  ;layout of the field
+INTRO_A db "\x80        \x00"  ;Welcome to BattleBit
+INTRO_0  db "\x80       W\x00"  ;WIN_1 db "\x80YOU WIN!\x00"
+INTRO_1  db "\x80      WE\x00"
+INTRO_2  db "\x80     WEL\x00"
+INTRO_3  db "\x80    WELC\x00"
+INTRO_4  db "\x80   WELCO\x00"
+INTRO_5  db "\x80  WELCOM\x00"
+INTRO_6  db "\x80 WELCOME\x00"
+INTRO_7  db "\x80WELCOME \x00"
+INTRO_8  db "\x80ELCOME T\x00"
+INTRO_9  db "\x80LCOME TO\x00"
+INTRO_10 db "\x80COME TO \x00"
+INTRO_11 db "\x80OME TO B\x00"
+INTRO_12 db "\x80ME TO BA\x00"
+INTRO_13 db "\x80E TO BAT\x00"
+INTRO_14 db "\x80 TO BATT\x00"
+INTRO_15 db "\x80TO BATTL\x00"
+INTRO_16 db "\x80O BATTLE\x00"
+INTRO_17 db "\x80 BATTLE \x00"
+INTRO_18 db "\xc0   BIT! \x00"
+PICK_NUMBER_1 db "\x80PICK A  \x00"  ;pick a number from 0-15
+PICK_NUMBER_2 db "\xc0  NUMBER\x00"
+PICK_NUMBER_3 db "\x80  FROM  \x00"
+PICK_NUMBER_4 db "\xc0  0-15  \x00"
+PUSH_BUTTON_20 db "\x80ADJUST  \x00"  ;instruction on logic switches
+PUSH_BUTTON_21 db "\xc0 BINARY \x00"
+PUSH_BUTTON_22 db "\x80LOGIC   \x00"
+PUSH_BUTTON_23 db "\xc0SWITCHES\x00"
+PUSH_BUTTON_24 db "\x80  PRESS \x00"
+PUSH_BUTTON_25 db "\xc0  (PB1) \x00"
+PUSH_BUTTON_26 db "\x80SWITCHES\x00"  ;shows user switch values during interrupt
+PUSH_BUTTON_27 db "\xc0 1 2 4 8\x00"  
+MISSED_1 db "\x80 TARGET \x00"  ;target missed/try again
+MISSED_2 db "\xc0MISSED:(\x00"
+MISSED_3 db "\x80        \x00"
+MISSED_4 db "\xc0        \x00"
+MISSED_5 db "\x80  TRY   \x00"
+MISSED_6 db "\xc0  AGAIN \x00"
+MISSED_7 db "\x80        \x00"
+MISSED_8 db "\xc0        \x00"
+GAME_OVER_0 db "\x80        \x00"  ;game over/try again
+GAME_OVER_1 db "\x80  GAME  \x00"  ;game over/try again
+GAME_OVER_2 db "\xc0  OVER  \x00"
+GAME_OVER_3 db "\x80        \x00"
+GAME_OVER_4 db "\xc0        \x00"
+GAME_OVER_5 db "\x80  PLAY  \x00"
+GAME_OVER_6 db "\xc0 AGAIN! \x00"
+GAME_OVER_7 db "\x80        \x00"
+GAME_OVER_8 db "\xc0        \x00"
+TARGET_0  db "\x80        \x00"
+TARGET_1  db "\x80 TARGET \x00"  ;target hit/Boom
+TARGET_2  db "\xc0 HIT! :)\x00"
+TARGET_3  db "\x80        \x00"
+TARGET_4  db "\xc0        \x00"
+TARGET_5  db "\x80BOOM!!!!\x00"
+TARGET_6  db "\x80!BOOM!!!\x00"
+TARGET_7  db "\x80!!BOOM!!\x00"
+TARGET_8  db "\x80!!!BOOM!\x00"
+TARGET_9  db "\x80!!!!BOOM\x00"
+TARGET_10 db "\xc0!!!!BOOM\x00"
+TARGET_11 db "\xc0!!!BOOM!\x00"
+TARGET_12 db "\xc0!!BOOM!!\x00"
+TARGET_13 db "\xc0!BOOM!!!\x00"
+TARGET_14 db "\xc0BOOM!!!!\x00"
+TARGET_15 db "\x80        \x00"
+TARGET_16 db "\xc0        \x00"
+TARGET_17 db "\x80        \x00"
+LOSER_1  db "\x80THE BITS\x00"		;the bits win
+LOSER_2  db "\x80  WIN!  \x00"
+BATTLE_BIT_1 db "\x80BATTLE  \x00"
+BATTLE_BIT_2 db "\x80 BITS   \x00"
+BATTLE_BIT_3 db "\x80  WERE  \x00"
+BATTLE_BIT_4 db "\x80 HIDING \x00"
+BATTLE_BIT_5 db "\x80UNDER...\x00"
+NUM_0  db "\x800       \x00"    		;numbers on LCD
+NUM_1  db "\x80 1      \x00"
+NUM_2  db "\x80  2     \x00"
+NUM_3  db "\x80   3    \x00"
+NUM_4  db "\x80    4   \x00"
+NUM_5  db "\x80     5  \x00"
+NUM_6  db "\x80      6 \x00"
+NUM_7  db "\x80       7\x00"
+NUM_8  db "\xc08       \x00"
+NUM_9  db "\xc0 9      \x00"
+NUM_10 db "\xc0  10    \x00"
+NUM_11 db "\xc0   11   \x00"
+NUM_12 db "\xc0    12  \x00"
+NUM_13 db "\xc0     13 \x00"
+NUM_14 db "\xc0      14\x00"
+NUM_15 db "\xc0      15\x00"
+NUM_A db "\x80*       \x00"     	;astrex positions on LCD associated with number choice
+NUM_B db "\x80 *      \x00"
+NUM_C db "\x80  *     \x00"
+NUM_D db "\x80   *    \x00"
+NUM_E db "\x80    *   \x00"
+NUM_F db "\x80     *  \x00"
+NUM_G db "\x80      * \x00"
+NUM_H db "\x80       *\x00"
+NUM_I db "\xc0*       \x00"
+NUM_J db "\xc0 *      \x00"
+NUM_K db "\xc0  *     \x00"
+NUM_L db "\xc0   *    \x00"
+NUM_M db "\xc0    *   \x00"
+NUM_N db "\xc0     *  \x00"
+NUM_O db "\xc0      * \x00"
+NUM_P db "\xc0       *\x00"
+WINNER_1  db "\x80YOU WON!\x00"  	;You Won emphasized, sink all 3 bits
+WINNER_2  db "\xc0  *   * \x00"
+WINNER_3  db "\x80YOU SUNK\x00"
+WINNER_4 db "\xc0 ALL 3  \x00"
+WINNER_5 db "\x80 BATTLE \x00"
+WINNER_6 db "\xc0  BITS  \x00"
+WINNER_7 db "\x80        \x00"
+WINNER_8 db "\xc0        \x00"
+end ;we done finally!!!:)
