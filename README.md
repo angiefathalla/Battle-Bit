@@ -1,4 +1,4 @@
-# battlebit
+# Battle-Bit
 Battle ship video game using a Pic18f452 microcontroller
 Battleship is a game that has been around for generations where traditionally 2 players have
 opposing symmetric layouts of the sea and place their battleship pegs in different places on their
